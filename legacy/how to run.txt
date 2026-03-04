@@ -1,0 +1,1 @@
+g++ glfw_test.cpp -o glfw_tes1 -lglfw -lGL -lX11 -lpthread -lXrandr -lXi -ldl

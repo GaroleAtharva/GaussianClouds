@@ -1,0 +1,33 @@
+#version 450 core
+layout(local_size_x = 256) in;
+
+struct SortEntry {
+    uint key;
+    uint index;
+};
+
+layout(std430, binding = 1) buffer SortBuffer {
+    SortEntry sortEntries[];
+};
+
+uniform uint uJ;  // step within block (comparison distance)
+uniform uint uK;  // block size (sort direction toggle)
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    uint partner = tid ^ uJ;
+
+    if (partner <= tid) return;  // only lower-index thread of each pair acts
+
+    SortEntry a = sortEntries[tid];
+    SortEntry b = sortEntries[partner];
+
+    // Ascending sort (back-to-front: smallest depth key = farthest first)
+    bool ascending = ((tid & uK) == 0u);
+    bool shouldSwap = ascending ? (a.key > b.key) : (a.key < b.key);
+
+    if (shouldSwap) {
+        sortEntries[tid] = b;
+        sortEntries[partner] = a;
+    }
+}

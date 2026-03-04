@@ -1,0 +1,27 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# IDE files
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Compiled objects
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Claude
+.claude/
