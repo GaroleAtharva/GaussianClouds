@@ -1,0 +1,29 @@
+#version 450 core
+layout(local_size_x = 1) in;
+
+// Binding 3: counter buffer with visibleCount
+layout(std430, binding = 3) buffer CounterBuffer {
+    uint visibleCount;
+};
+
+// Binding 4: indirect draw command buffer
+// struct DrawArraysIndirectCommand { uint count, primCount, first, baseInstance; }
+layout(std430, binding = 4) buffer IndirectBuffer {
+    uint drawCount;      // = 4 (vertices per quad)
+    uint drawPrimCount;  // = min(visibleCount, maxSplats)
+    uint drawFirst;      // = 0
+    uint drawBaseInst;   // = startOffset
+};
+
+uniform uint maxSplats;
+
+void main() {
+    uint visible = visibleCount;
+    uint cap = min(visible, maxSplats);
+    uint startOff = visible - cap;  // skip farthest, keep nearest
+
+    drawCount = 4u;
+    drawPrimCount = cap;
+    drawFirst = 0u;
+    drawBaseInst = startOff;
+}

@@ -1,0 +1,147 @@
+#version 450 core
+layout(local_size_x = 256) in;
+
+#define RADIX_SORT_BINS 256
+#define NUM_BLOCKS_PER_WORKGROUP 32
+
+// Phase 1: Compute global prefix sums from per-workgroup histograms (Blelloch scan)
+// Phase 2: Scatter key-value pairs to sorted output positions
+
+layout(std430, binding = 0) readonly buffer KeysIn {
+    uint keysIn[];
+};
+
+layout(std430, binding = 1) readonly buffer ValsIn {
+    uint valsIn[];
+};
+
+layout(std430, binding = 2) writeonly buffer KeysOut {
+    uint keysOut[];
+};
+
+layout(std430, binding = 3) writeonly buffer ValsOut {
+    uint valsOut[];
+};
+
+// histograms[bin * numWorkgroups + workgroupId] — written by histogram pass
+layout(std430, binding = 4) buffer Histograms {
+    uint histograms[];
+};
+
+uniform uint uNumElements;
+uniform uint uNumWorkgroups;
+uniform uint uShift;
+
+// Shared memory for prefix sums and local digit counting
+// We need to store the global prefix sum per bin (256 uints)
+// plus local histogram for this workgroup's data
+shared uint globalOffsets[RADIX_SORT_BINS]; // prefix sum result per bin
+shared uint localHistogram[RADIX_SORT_BINS];
+
+void main() {
+    uint localId = gl_LocalInvocationID.x;
+    uint workgroupId = gl_WorkGroupID.x;
+
+    // ----- Phase 1: Compute global prefix sums -----
+    // Each bin has numWorkgroups entries. We need the prefix sum across all bins.
+    // Total entries in histogram = RADIX_SORT_BINS * numWorkgroups
+    // We compute: for each bin b, globalOffsets[b] = sum of all histogram entries
+    // for bins 0..b-1, plus sum of workgroup entries 0..workgroupId-1 for bin b.
+
+    // First: compute the total count for this bin across all workgroups,
+    // and the partial sum up to (but not including) this workgroup.
+    // Each thread handles one bin (localId = bin index since workgroup size = 256 = RADIX_SORT_BINS)
+
+    uint binBase = localId * uNumWorkgroups;
+    uint prefixForThisWorkgroup = 0u;
+    uint totalForBin = 0u;
+    for (uint w = 0u; w < uNumWorkgroups; w++) {
+        uint count = histograms[binBase + w];
+        if (w < workgroupId) {
+            prefixForThisWorkgroup += count;
+        }
+        totalForBin += count;
+    }
+
+    // Now we need prefix sum of totalForBin across bins 0..localId-1
+    // Use Blelloch scan in shared memory
+    localHistogram[localId] = totalForBin;
+    barrier();
+
+    // Up-sweep (reduce)
+    for (uint stride = 1u; stride < RADIX_SORT_BINS; stride <<= 1u) {
+        uint index = (localId + 1u) * (stride << 1u) - 1u;
+        if (index < RADIX_SORT_BINS) {
+            localHistogram[index] += localHistogram[index - stride];
+        }
+        barrier();
+    }
+
+    // Set last element to 0
+    if (localId == 0u) {
+        localHistogram[RADIX_SORT_BINS - 1u] = 0u;
+    }
+    barrier();
+
+    // Down-sweep
+    for (uint stride = RADIX_SORT_BINS >> 1u; stride >= 1u; stride >>= 1u) {
+        uint index = (localId + 1u) * (stride << 1u) - 1u;
+        if (index < RADIX_SORT_BINS) {
+            uint temp = localHistogram[index - stride];
+            localHistogram[index - stride] = localHistogram[index];
+            localHistogram[index] += temp;
+        }
+        barrier();
+    }
+
+    // globalOffsets[bin] = prefix sum across bins + prefix within this bin's workgroups
+    globalOffsets[localId] = localHistogram[localId] + prefixForThisWorkgroup;
+    barrier();
+
+    // ----- Phase 2: Scatter -----
+    // Each workgroup scatters its own chunk of elements
+    uint blockStart = workgroupId * (256u * NUM_BLOCKS_PER_WORKGROUP);
+
+    for (uint block = 0u; block < NUM_BLOCKS_PER_WORKGROUP; block++) {
+        // Clear local histogram for counting within this sub-block
+        localHistogram[localId] = 0u;
+        barrier();
+
+        uint idx = blockStart + block * 256u + localId;
+        uint key = 0xFFFFFFFFu;
+        uint val = 0u;
+        uint digit = 0u;
+
+        if (idx < uNumElements) {
+            key = keysIn[idx];
+            val = valsIn[idx];
+            digit = (key >> uShift) & 0xFFu;
+        }
+
+        // Count how many threads in this sub-block have the same digit
+        // AND have a lower localId (for intra-block ordering)
+        // Use bit-flag technique: each thread sets a flag, then count bits below
+        // For portability (no subgroup ops), we use shared memory atomics
+
+        // We need to determine ordering among threads with the same digit.
+        // Simple approach: use atomicAdd on localHistogram to get per-thread offset
+        uint localOffset = 0u;
+        if (idx < uNumElements) {
+            localOffset = atomicAdd(localHistogram[digit], 1u);
+        }
+        barrier();
+
+        // Scatter to output
+        if (idx < uNumElements) {
+            uint dst = globalOffsets[digit] + localOffset;
+            keysOut[dst] = key;
+            valsOut[dst] = val;
+        }
+        barrier();
+
+        // Advance globalOffsets by the local counts from this sub-block
+        // Each thread handles one bin (localId maps 1:1 to bins)
+        globalOffsets[localId] += localHistogram[localId];
+        barrier();
+    }
+}

@@ -31,6 +31,7 @@ public:
     float getLastSortTimeMs() const { return lastSortTimeMs; }
 
     int maxVisibleSplats = 200000;  // configurable via ImGui
+    bool useRadixSort = true;       // toggle between radix and bitonic sort
 
 private:
     void setupQuadGeometry();
@@ -43,16 +44,24 @@ private:
 
     // Compute shader programs
     GLuint preprocessProgram = 0;
-    GLuint sortProgram = 0;
+    GLuint bitonicSortProgram = 0;  // bitonic sort (fallback)
+    GLuint histogramProgram = 0;    // radix sort: histogram pass
+    GLuint scatterProgram = 0;      // radix sort: scatter pass
 
     // SSBOs
     GLuint gaussianSSBO = 0;   // binding 0: raw Gaussian data (static)
-    GLuint sortSSBO = 0;       // binding 1: sort entries {key, index}
+    GLuint sortSSBO = 0;       // binding 1: sort entries {key, index} (bitonic)
     GLuint splat2DSSBO = 0;    // binding 2: preprocessed 2D splat data
     GLuint counterBuffer = 0;  // binding 3: atomic visible count
 
+    // Radix sort ping-pong buffers
+    GLuint sortKeysA = 0, sortKeysB = 0;   // key ping-pong
+    GLuint sortValsA = 0, sortValsB = 0;   // value ping-pong
+    GLuint histogramSSBO = 0;              // per-workgroup histograms
+
     size_t gaussianCount = 0;
     uint32_t paddedCount = 0;
+    uint32_t radixNumWorkgroups = 0;
 
     size_t lastVisibleCount = 0;
     size_t lastTotalVisible = 0;

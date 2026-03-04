@@ -12,6 +12,7 @@ struct Splat2D {
     vec4 clipCenter;    // clip-space center
     vec4 conicRadius;   // conic.xyz + radius
     vec4 colorOpacity;  // rgb + opacity
+    vec4 axisA_axisB;   // xy = major axis, zw = minor axis (screen-space)
 };
 
 struct SortEntry {
@@ -33,6 +34,15 @@ layout(std430, binding = 2) writeonly buffer Splat2DBuffer {
 
 layout(std430, binding = 3) buffer CounterBuffer {
     uint visibleCount;
+};
+
+// Radix sort separate key/value buffers
+layout(std430, binding = 4) writeonly buffer RadixKeysBuffer {
+    uint radixKeys[];
+};
+
+layout(std430, binding = 5) writeonly buffer RadixValsBuffer {
+    uint radixVals[];
 };
 
 uniform mat4 modelView;
@@ -61,10 +71,15 @@ void main() {
         return;
     }
 
+    // Default radix sort entries (culled = max key)
+    radixKeys[idx] = 0xFFFFFFFFu;
+    radixVals[idx] = idx;
+
     // Default: mark as culled with safe splat data
     splats[idx].clipCenter = vec4(0.0, 0.0, -2.0, 1.0);
     splats[idx].conicRadius = vec4(0.0);
     splats[idx].colorOpacity = vec4(0.0);
+    splats[idx].axisA_axisB = vec4(0.0);
 
     GaussianIn g = gaussians[idx];
     float opacity = g.pos_opacity.w;
@@ -127,10 +142,21 @@ void main() {
     float di = 1.0 / det;
     vec3 conic = vec3(cyy*di, -cxy*di, cxx*di);
 
-    // 2-sigma bounding
+    // Eigenvalues of the 2D covariance for bounding and ellipse axes
     float mid = 0.5 * (cxx + cyy);
-    float lmax = mid + sqrt(max(0.1, mid*mid - det));
-    float rad = ceil(2.0 * sqrt(lmax));
+    float disc = max(0.1, mid*mid - det);
+    float sqrtDisc = sqrt(disc);
+    float lmax = mid + sqrtDisc;
+    float lmin = max(0.01, mid - sqrtDisc);
+
+    // Opacity-aware radius (FlashGS): tighter bounds for low-opacity splats
+    float tau = 0.004;  // minimum visible alpha (1/255)
+    float opacityScale = (opacity > tau) ? sqrt(2.0 * log(opacity / tau)) : 2.0;
+    opacityScale = clamp(opacityScale, 1.0, 3.0);
+
+    float radMajor = ceil(opacityScale * sqrt(lmax));
+    float radMinor = ceil(opacityScale * sqrt(lmin));
+    float rad = radMajor;
     rad = min(rad, 256.0);
 
     // Cull oversized + faint
@@ -140,10 +166,21 @@ void main() {
         return;
     }
 
+    // Eigenvector of major axis (for ellipse-fitted quads)
+    vec2 eigVec;
+    if (abs(cxy) > 1e-6) {
+        eigVec = normalize(vec2(lmax - cyy, cxy));
+    } else {
+        eigVec = (cxx >= cyy) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    }
+    // Major and minor axis vectors scaled by their radii
+    vec2 axisA = eigVec * radMajor;
+    vec2 axisB = vec2(-eigVec.y, eigVec.x) * radMinor;
+
     // Clip-space position
     vec4 cc = projection * viewCenter;
 
-    // Cull off-screen
+    // Cull off-screen (use radMajor for conservative test)
     vec2 ndc = cc.xy / cc.w;
     vec2 radNdc = rad / (viewport * 0.5);
     if (ndc.x + radNdc.x < -1.0 || ndc.x - radNdc.x > 1.0 ||
@@ -157,10 +194,16 @@ void main() {
     splats[idx].clipCenter = cc;
     splats[idx].conicRadius = vec4(conic, rad);
     splats[idx].colorOpacity = vec4(g.color_pad.xyz, opacity);
+    splats[idx].axisA_axisB = vec4(axisA, axisB);
 
     // Write sort key (back-to-front: ascending depth = farthest first)
-    sortEntries[idx].key = floatToSortKey(viewCenter.z);
+    uint sortKey = floatToSortKey(viewCenter.z);
+    sortEntries[idx].key = sortKey;
     sortEntries[idx].index = idx;
+
+    // Also write to radix sort buffers
+    radixKeys[idx] = sortKey;
+    radixVals[idx] = idx;
 
     atomicAdd(visibleCount, 1u);
 }

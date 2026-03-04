@@ -343,7 +343,9 @@ int main(int argc, char* argv[]) {
         if (ImGui::CollapsingHeader("Info", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Text("FPS: %.1f (%.3f ms)", io.Framerate, 1000.0f / io.Framerate);
             if (useSplatRenderer && splatRenderer.getInstanceCount() > 0) {
-                ImGui::Text("GPU Sort: %.2f ms", splatRenderer.getLastSortTimeMs());
+                ImGui::Text("GPU Sort (%s): %.2f ms",
+                    splatRenderer.useRadixSort ? "Radix" : "Bitonic",
+                    splatRenderer.getLastSortTimeMs());
                 ImGui::Text("Drawn: %zu | Visible: %zu | Total: %zu",
                     splatRenderer.getVisibleCount(),
                     splatRenderer.getTotalVisible(),
@@ -391,6 +393,7 @@ int main(int argc, char* argv[]) {
                 ImGui::Separator();
                 ImGui::Checkbox("Use Splat Renderer", &useSplatRenderer);
                 if (useSplatRenderer) {
+                    ImGui::Checkbox("Use Radix Sort", &splatRenderer.useRadixSort);
                     ImGui::SliderFloat("Splat Scale", &splatScale, 0.01f, 10.0f, "%.2f");
                     ImGui::SliderInt("Max Splats", &splatRenderer.maxVisibleSplats, 5000, 2000000);
                 } else {

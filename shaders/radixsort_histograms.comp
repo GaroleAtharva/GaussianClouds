@@ -1,0 +1,49 @@
+#version 450 core
+layout(local_size_x = 256) in;
+
+#define RADIX_SORT_BINS 256
+#define NUM_BLOCKS_PER_WORKGROUP 32
+
+// Each workgroup processes WORKGROUP_SIZE * NUM_BLOCKS_PER_WORKGROUP = 8192 elements
+// and produces a per-workgroup histogram of 256 bins for the current 8-bit digit.
+
+layout(std430, binding = 0) readonly buffer KeysIn {
+    uint keys[];
+};
+
+// histograms[bin * numWorkgroups + workgroupIndex]
+layout(std430, binding = 1) writeonly buffer Histograms {
+    uint histograms[];
+};
+
+uniform uint uNumElements;
+uniform uint uNumWorkgroups;
+uniform uint uShift; // 0, 8, 16, or 24
+
+shared uint sharedHistogram[RADIX_SORT_BINS];
+
+void main() {
+    uint localId = gl_LocalInvocationID.x;
+    uint workgroupId = gl_WorkGroupID.x;
+
+    // Clear shared histogram
+    sharedHistogram[localId] = 0u;
+    barrier();
+
+    // Each thread processes NUM_BLOCKS_PER_WORKGROUP elements
+    uint blockStart = workgroupId * (256u * NUM_BLOCKS_PER_WORKGROUP);
+    for (uint block = 0u; block < NUM_BLOCKS_PER_WORKGROUP; block++) {
+        uint idx = blockStart + block * 256u + localId;
+        if (idx < uNumElements) {
+            uint key = keys[idx];
+            uint digit = (key >> uShift) & 0xFFu;
+            atomicAdd(sharedHistogram[digit], 1u);
+        }
+    }
+
+    barrier();
+
+    // Write per-workgroup histogram to global memory
+    // Layout: histograms[bin * numWorkgroups + workgroupId]
+    histograms[localId * uNumWorkgroups + workgroupId] = sharedHistogram[localId];
+}
