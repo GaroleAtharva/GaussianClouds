@@ -63,6 +63,14 @@ private:
     uint32_t paddedCount = 0;
     uint32_t radixNumWorkgroups = 0;
 
+    // Async visible count readback (eliminates CPU-GPU sync stall)
+    GLuint readbackBuf[2] = {0, 0};
+    GLsync readbackFence[2] = {nullptr, nullptr};
+    uint32_t* readbackPtr[2] = {nullptr, nullptr};
+    int readbackIdx = 0;
+    uint32_t asyncVisibleCount = 0;
+    bool asyncReady = false;  // false until first readback completes
+
     size_t lastVisibleCount = 0;
     size_t lastTotalVisible = 0;
     float lastSortTimeMs = 0.0f;

@@ -170,6 +170,20 @@ void SplatRenderer::upload(const GaussianData& data) {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, histogramSSBO);
     glBufferData(GL_SHADER_STORAGE_BUFFER, histBufSize, nullptr, GL_DYNAMIC_DRAW);
 
+    // Async readback buffers (persistent mapped, double-buffered)
+    for (int i = 0; i < 2; i++) {
+        glGenBuffers(1, &readbackBuf[i]);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, readbackBuf[i]);
+        glBufferStorage(GL_COPY_WRITE_BUFFER, sizeof(uint32_t), nullptr,
+            GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+        readbackPtr[i] = static_cast<uint32_t*>(
+            glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, sizeof(uint32_t),
+                GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT));
+    }
+    readbackIdx = 0;
+    asyncVisibleCount = 0;
+    asyncReady = false;
+
     // Compile compute shaders
     compileComputeShader("shaders/preprocess.comp", preprocessProgram);
     compileComputeShader("shaders/sort.comp", bitonicSortProgram);
@@ -221,10 +235,38 @@ void SplatRenderer::draw(const Shader& shader, const glm::mat4& modelView,
     glDispatchCompute(preprocessGroups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_ATOMIC_COUNTER_BARRIER_BIT);
 
-    // Read visible count
-    uint32_t visibleCount = 0;
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &visibleCount);
-    if (visibleCount > gaussianCount) visibleCount = static_cast<uint32_t>(gaussianCount);
+    // --- Async visible count readback (no CPU-GPU sync stall) ---
+    // Check if previous frame's readback is ready
+    int prevIdx = 1 - readbackIdx;
+    if (readbackFence[prevIdx]) {
+        GLenum result = glClientWaitSync(readbackFence[prevIdx], 0, 0);
+        if (result == GL_ALREADY_SIGNALED || result == GL_CONDITION_SATISFIED) {
+            asyncVisibleCount = *readbackPtr[prevIdx];
+            if (asyncVisibleCount > gaussianCount)
+                asyncVisibleCount = static_cast<uint32_t>(gaussianCount);
+            glDeleteSync(readbackFence[prevIdx]);
+            readbackFence[prevIdx] = nullptr;
+            asyncReady = true;
+        }
+    }
+
+    // Kick off async copy for THIS frame's visible count
+    glBindBuffer(GL_COPY_READ_BUFFER, counterBuffer);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, readbackBuf[readbackIdx]);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, sizeof(uint32_t));
+    if (readbackFence[readbackIdx]) glDeleteSync(readbackFence[readbackIdx]);
+    readbackFence[readbackIdx] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    readbackIdx = 1 - readbackIdx;
+
+    // Use async visible count (1-frame delay). First frame: synchronous fallback.
+    uint32_t visibleCount;
+    if (!asyncReady) {
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterBuffer);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(uint32_t), &visibleCount);
+        if (visibleCount > gaussianCount) visibleCount = static_cast<uint32_t>(gaussianCount);
+    } else {
+        visibleCount = asyncVisibleCount;
+    }
     lastTotalVisible = visibleCount;
 
     if (visibleCount == 0) {
@@ -362,6 +404,19 @@ void SplatRenderer::cleanup() {
     if (sortValsA) { glDeleteBuffers(1, &sortValsA); sortValsA = 0; }
     if (sortValsB) { glDeleteBuffers(1, &sortValsB); sortValsB = 0; }
     if (histogramSSBO) { glDeleteBuffers(1, &histogramSSBO); histogramSSBO = 0; }
+    for (int i = 0; i < 2; i++) {
+        if (readbackFence[i]) { glDeleteSync(readbackFence[i]); readbackFence[i] = nullptr; }
+        if (readbackBuf[i]) {
+            glBindBuffer(GL_COPY_WRITE_BUFFER, readbackBuf[i]);
+            glUnmapBuffer(GL_COPY_WRITE_BUFFER);
+            glDeleteBuffers(1, &readbackBuf[i]);
+            readbackBuf[i] = 0;
+            readbackPtr[i] = nullptr;
+        }
+    }
+    asyncReady = false;
+    asyncVisibleCount = 0;
+    readbackIdx = 0;
     if (preprocessProgram) { glDeleteProgram(preprocessProgram); preprocessProgram = 0; }
     if (bitonicSortProgram) { glDeleteProgram(bitonicSortProgram); bitonicSortProgram = 0; }
     if (histogramProgram) { glDeleteProgram(histogramProgram); histogramProgram = 0; }
