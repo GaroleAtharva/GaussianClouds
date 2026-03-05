@@ -13,6 +13,7 @@ struct Splat2D {
     vec4 conicRadius;   // conic.xyz + radius
     vec4 colorOpacity;  // rgb + opacity
     vec4 axisA_axisB;   // xy = major axis, zw = minor axis (screen-space)
+    vec4 worldNormal;   // xyz = world-space normal (from smallest scale axis), w = unused
 };
 
 struct SortEntry {
@@ -47,6 +48,7 @@ layout(std430, binding = 5) writeonly buffer RadixValsBuffer {
 
 uniform mat4 modelView;
 uniform mat4 projection;
+uniform mat3 normalMatrix;  // mat3(modelMatrix) — transforms normals to world space
 uniform vec2 viewport;
 uniform float splatScale;
 uniform uint gaussianCount;
@@ -80,6 +82,7 @@ void main() {
     splats[idx].conicRadius = vec4(0.0);
     splats[idx].colorOpacity = vec4(0.0);
     splats[idx].axisA_axisB = vec4(0.0);
+    splats[idx].worldNormal = vec4(0.0);
 
     GaussianIn g = gaussians[idx];
     float opacity = g.pos_opacity.w;
@@ -190,11 +193,25 @@ void main() {
         return;
     }
 
+    // Compute world-space normal from shortest scale axis
+    // The smallest scale component determines which column of R is the normal
+    vec3 normal;
+    if (sc.x <= sc.y && sc.x <= sc.z) {
+        normal = R[0]; // first column
+    } else if (sc.y <= sc.x && sc.y <= sc.z) {
+        normal = R[1]; // second column
+    } else {
+        normal = R[2]; // third column
+    }
+    // Transform normal from model space to world space
+    normal = normalize(normalMatrix * normal);
+
     // Write preprocessed data
     splats[idx].clipCenter = cc;
     splats[idx].conicRadius = vec4(conic, rad);
     splats[idx].colorOpacity = vec4(g.color_pad.xyz, opacity);
     splats[idx].axisA_axisB = vec4(axisA, axisB);
+    splats[idx].worldNormal = vec4(normal, 0.0);
 
     // Write sort key (back-to-front: ascending depth = farthest first)
     uint sortKey = floatToSortKey(viewCenter.z);

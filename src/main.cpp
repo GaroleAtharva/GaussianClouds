@@ -16,6 +16,11 @@ extern "C" {
 #include <iostream>
 #include <filesystem>
 #include <cstring>
+#include <cmath>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #include "Shader.h"
 #include "Camera.h"
@@ -57,6 +62,10 @@ char           plyPathBuffer[512] = "";
 // Splat renderer state
 bool           useSplatRenderer = true;
 float          splatScale       = 1.0f;
+
+// Light marker
+GLuint lightMarkerVAO = 0, lightMarkerVBO = 0;
+bool   showLightMarker = true;
 
 // Forward declarations
 void loadPLYFile(const std::string& path, PointCloudRenderer& pcRenderer, SplatRenderer& spRenderer);
@@ -296,6 +305,7 @@ int main(int argc, char* argv[]) {
             pcModel = glm::rotate(pcModel, glm::radians(pcRotation[2]), glm::vec3(0.0f, 0.0f, 1.0f));
 
             if (useSplatRenderer && splatRenderer.getInstanceCount() > 0) {
+                splatRenderer.modelMatrix = pcModel;
                 glDepthMask(GL_FALSE);
                 glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);  // premultiplied alpha
                 glm::vec2 vp(static_cast<float>(width), static_cast<float>(height));
@@ -312,6 +322,75 @@ int main(int argc, char* argv[]) {
                 pointCloudShader.setFloat("opacity", pointOpacity);
                 pointCloudRenderer.draw(pointCloudShader);
             }
+        }
+
+        // --- Light marker ---
+        if (showLightMarker && splatRenderer.lightingEnabled && gaussianData.count > 0 && useSplatRenderer) {
+            // Compute light direction in world space
+            float az = static_cast<float>(splatRenderer.lightAzimuth * M_PI / 180.0);
+            float el = static_cast<float>(splatRenderer.lightElevation * M_PI / 180.0);
+            float cosEl = std::cos(el);
+            glm::vec3 lightDir(cosEl * std::cos(az), std::sin(el), cosEl * std::sin(az));
+            lightDir = glm::normalize(lightDir);
+
+            // Place light marker at a fixed distance from the scene centroid
+            glm::vec3 extent = gaussianData.bboxMax - gaussianData.bboxMin;
+            float markerDist = glm::length(extent) * 0.8f;
+            if (markerDist < 1.0f) markerDist = 3.0f;
+            glm::vec3 center = gaussianData.centroid;
+            glm::vec3 lightPos = center + lightDir * markerDist;
+
+            // Build vertex data: sun point + 3 direction lines from it
+            float lc[3] = {splatRenderer.lightColor[0], splatRenderer.lightColor[1], splatRenderer.lightColor[2]};
+            float lineLen = markerDist * 0.15f;
+            glm::vec3 tip = lightPos - lightDir * lineLen;
+            // Cross products for small side lines
+            glm::vec3 up(0, 1, 0);
+            if (std::abs(glm::dot(lightDir, up)) > 0.9f) up = glm::vec3(1, 0, 0);
+            glm::vec3 right = glm::normalize(glm::cross(lightDir, up));
+            glm::vec3 upDir = glm::normalize(glm::cross(right, lightDir));
+            float armLen = lineLen * 0.3f;
+
+            float markerVerts[] = {
+                // Main direction line (bright yellow -> dimmer)
+                lightPos.x, lightPos.y, lightPos.z,  lc[0], lc[1], lc[2],
+                tip.x, tip.y, tip.z,                 lc[0]*0.5f, lc[1]*0.5f, lc[2]*0.5f,
+                // Right arm
+                lightPos.x, lightPos.y, lightPos.z,  lc[0], lc[1], lc[2],
+                lightPos.x + right.x*armLen, lightPos.y + right.y*armLen, lightPos.z + right.z*armLen,  lc[0]*0.7f, lc[1]*0.7f, lc[2]*0.7f,
+                // Left arm
+                lightPos.x, lightPos.y, lightPos.z,  lc[0], lc[1], lc[2],
+                lightPos.x - right.x*armLen, lightPos.y - right.y*armLen, lightPos.z - right.z*armLen,  lc[0]*0.7f, lc[1]*0.7f, lc[2]*0.7f,
+                // Up arm
+                lightPos.x, lightPos.y, lightPos.z,  lc[0], lc[1], lc[2],
+                lightPos.x + upDir.x*armLen, lightPos.y + upDir.y*armLen, lightPos.z + upDir.z*armLen,  lc[0]*0.7f, lc[1]*0.7f, lc[2]*0.7f,
+                // Down arm
+                lightPos.x, lightPos.y, lightPos.z,  lc[0], lc[1], lc[2],
+                lightPos.x - upDir.x*armLen, lightPos.y - upDir.y*armLen, lightPos.z - upDir.z*armLen,  lc[0]*0.7f, lc[1]*0.7f, lc[2]*0.7f,
+            };
+
+            if (!lightMarkerVAO) {
+                glGenVertexArrays(1, &lightMarkerVAO);
+                glGenBuffers(1, &lightMarkerVBO);
+            }
+            glBindVertexArray(lightMarkerVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, lightMarkerVBO);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(markerVerts), markerVerts, GL_DYNAMIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+
+            basicShader.use();
+            basicShader.setMat4("model", glm::mat4(1.0f));
+            basicShader.setMat4("view", view);
+            basicShader.setMat4("projection", projection);
+            glLineWidth(3.0f);
+            glDrawArrays(GL_LINES, 0, 10);
+            glPointSize(12.0f);
+            glDrawArrays(GL_POINTS, 0, 1);  // draw sun point
+            glLineWidth(1.0f);
+            glBindVertexArray(0);
         }
 
         // --- ImGui frame ---
@@ -400,6 +479,26 @@ int main(int argc, char* argv[]) {
                     ImGui::SliderFloat("Point Size", &pointSize, 0.5f, 20.0f, "%.1f");
                     ImGui::SliderFloat("Point Opacity", &pointOpacity, 0.0f, 1.0f, "%.2f");
                 }
+                // Lighting controls
+                if (useSplatRenderer) {
+                    ImGui::Separator();
+                    ImGui::Text("Lighting");
+                    ImGui::Checkbox("Enable Lighting", &splatRenderer.lightingEnabled);
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Show Marker", &showLightMarker);
+                    if (splatRenderer.lightingEnabled) {
+                        ImGui::SliderFloat("Azimuth", &splatRenderer.lightAzimuth, -180.0f, 180.0f, "%.1f deg");
+                        ImGui::SliderFloat("Elevation", &splatRenderer.lightElevation, -90.0f, 90.0f, "%.1f deg");
+                        ImGui::ColorEdit3("Light Color", splatRenderer.lightColor);
+                        ImGui::SliderFloat("Intensity", &splatRenderer.lightIntensity, 0.0f, 3.0f, "%.2f");
+                        ImGui::SliderFloat("Ambient", &splatRenderer.ambient, 0.0f, 1.0f, "%.2f");
+                        ImGui::SliderFloat("Diffuse", &splatRenderer.diffuse, 0.0f, 2.0f, "%.2f");
+                        ImGui::SliderFloat("Wrap", &splatRenderer.wrapFactor, 0.0f, 1.0f, "%.2f");
+                        ImGui::SliderFloat("Scatter", &splatRenderer.scatter, 0.0f, 1.0f, "%.2f");
+                    }
+                }
+
+                ImGui::Separator();
                 ImGui::SliderFloat("Rotate X", &pcRotation[0], -180.0f, 180.0f, "%.1f");
                 ImGui::SliderFloat("Rotate Y", &pcRotation[1], -180.0f, 180.0f, "%.1f");
                 ImGui::SliderFloat("Rotate Z", &pcRotation[2], -180.0f, 180.0f, "%.1f");
@@ -438,6 +537,8 @@ int main(int argc, char* argv[]) {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
+    if (lightMarkerVAO) { glDeleteVertexArrays(1, &lightMarkerVAO); }
+    if (lightMarkerVBO) { glDeleteBuffers(1, &lightMarkerVBO); }
     renderer.cleanup();
     pointCloudRenderer.cleanup();
     splatRenderer.cleanup();

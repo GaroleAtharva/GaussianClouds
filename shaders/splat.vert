@@ -7,6 +7,7 @@ struct Splat2D {
     vec4 conicRadius;   // conic.xyz + radius
     vec4 colorOpacity;  // rgb + opacity
     vec4 axisA_axisB;   // xy = major axis, zw = minor axis (screen-space pixels)
+    vec4 worldNormal;   // xyz = world-space normal, w = unused
 };
 
 struct SortEntry {
@@ -32,6 +33,7 @@ out vec3 vColor;
 out float vOpacity;
 noperspective out vec2 vDelta;
 flat out vec3 vConic;
+flat out vec3 vNormal;
 
 void main() {
     uint origIdx;
@@ -64,5 +66,6 @@ void main() {
     vConic = s.conicRadius.xyz;
     vColor = s.colorOpacity.xyz;
     vOpacity = s.colorOpacity.w;
+    vNormal = s.worldNormal.xyz;
     vDelta = off;
 }

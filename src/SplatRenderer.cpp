@@ -9,6 +9,10 @@
 #include <sstream>
 #include <iostream>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 SplatRenderer::SplatRenderer() {}
 
 SplatRenderer::~SplatRenderer() {
@@ -130,11 +134,11 @@ void SplatRenderer::upload(const GaussianData& data) {
                  nullptr, GL_DYNAMIC_DRAW);
 
     // SSBO 2: Preprocessed 2D splat data
-    // Each: vec4 clipCenter + vec4 conicRadius + vec4 colorOpacity + vec4 axisA_axisB = 64 bytes
+    // Each: vec4 clipCenter + vec4 conicRadius + vec4 colorOpacity + vec4 axisA_axisB + vec4 worldNormal = 80 bytes
     glGenBuffers(1, &splat2DSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, splat2DSSBO);
     glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 static_cast<GLsizeiptr>(gaussianCount * 16 * sizeof(float)),
+                 static_cast<GLsizeiptr>(gaussianCount * 20 * sizeof(float)),
                  nullptr, GL_DYNAMIC_DRAW);
 
     // Atomic counter buffer
@@ -226,6 +230,8 @@ void SplatRenderer::draw(const Shader& shader, const glm::mat4& modelView,
     glUseProgram(preprocessProgram);
     glUniformMatrix4fv(glGetUniformLocation(preprocessProgram, "modelView"), 1, GL_FALSE, &modelView[0][0]);
     glUniformMatrix4fv(glGetUniformLocation(preprocessProgram, "projection"), 1, GL_FALSE, &projection[0][0]);
+    glm::mat3 normalMat = glm::mat3(modelMatrix);
+    glUniformMatrix3fv(glGetUniformLocation(preprocessProgram, "normalMatrix"), 1, GL_FALSE, &normalMat[0][0]);
     glUniform2f(glGetUniformLocation(preprocessProgram, "viewport"), viewport.x, viewport.y);
     glUniform1f(glGetUniformLocation(preprocessProgram, "splatScale"), splatScale);
     glUniform1ui(glGetUniformLocation(preprocessProgram, "gaussianCount"), static_cast<GLuint>(gaussianCount));
@@ -346,6 +352,7 @@ void SplatRenderer::draw(const Shader& shader, const glm::mat4& modelView,
         shader.setVec2("viewport", viewport);
         glUniform1ui(glGetUniformLocation(shader.ID, "uStartOffset"), startOffset);
         glUniform1ui(glGetUniformLocation(shader.ID, "uUseRadixSort"), 1u);
+        setLightUniforms(shader);
 
         glBindVertexArray(VAO);
         glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(drawCount));
@@ -385,6 +392,7 @@ void SplatRenderer::draw(const Shader& shader, const glm::mat4& modelView,
         shader.setVec2("viewport", viewport);
         glUniform1ui(glGetUniformLocation(shader.ID, "uStartOffset"), startOffset);
         glUniform1ui(glGetUniformLocation(shader.ID, "uUseRadixSort"), 0u);
+        setLightUniforms(shader);
 
         glBindVertexArray(VAO);
         glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(drawCount));
@@ -424,4 +432,25 @@ void SplatRenderer::cleanup() {
     gaussianCount = 0;
     paddedCount = 0;
     radixNumWorkgroups = 0;
+}
+
+void SplatRenderer::setLightUniforms(const Shader& shader) {
+    // Convert azimuth/elevation to direction vector (toward the light)
+    float az = static_cast<float>(lightAzimuth * M_PI / 180.0);
+    float el = static_cast<float>(lightElevation * M_PI / 180.0);
+    float cosEl = std::cos(el);
+    glm::vec3 lightDir(cosEl * std::cos(az), std::sin(el), cosEl * std::sin(az));
+    lightDir = glm::normalize(lightDir);
+
+    glm::vec3 lc(lightColor[0] * lightIntensity,
+                  lightColor[1] * lightIntensity,
+                  lightColor[2] * lightIntensity);
+
+    glUniform3f(glGetUniformLocation(shader.ID, "uLightDir"), lightDir.x, lightDir.y, lightDir.z);
+    glUniform3f(glGetUniformLocation(shader.ID, "uLightColor"), lc.x, lc.y, lc.z);
+    glUniform1f(glGetUniformLocation(shader.ID, "uAmbient"), ambient);
+    glUniform1f(glGetUniformLocation(shader.ID, "uDiffuse"), diffuse);
+    glUniform1f(glGetUniformLocation(shader.ID, "uWrapFactor"), wrapFactor);
+    glUniform1f(glGetUniformLocation(shader.ID, "uScatter"), scatter);
+    glUniform1f(glGetUniformLocation(shader.ID, "uLightingEnabled"), lightingEnabled ? 1.0f : 0.0f);
 }

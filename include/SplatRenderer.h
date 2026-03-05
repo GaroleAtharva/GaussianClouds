@@ -33,8 +33,23 @@ public:
     int maxVisibleSplats = 200000;  // configurable via ImGui
     bool useRadixSort = true;       // toggle between radix and bitonic sort
 
+    // Model matrix — set by caller before draw() so normals transform correctly
+    glm::mat4 modelMatrix = glm::mat4(1.0f);
+
+    // Lighting parameters (controlled via ImGui)
+    bool  lightingEnabled = true;
+    float lightAzimuth    = 45.0f;   // degrees
+    float lightElevation  = 45.0f;   // degrees
+    float lightColor[3]   = {1.0f, 1.0f, 0.95f};
+    float lightIntensity  = 1.0f;
+    float ambient         = 0.3f;
+    float diffuse         = 0.7f;
+    float wrapFactor      = 0.3f;    // wrap lighting
+    float scatter         = 0.2f;    // subsurface scatter
+
 private:
     void setupQuadGeometry();
+    void setLightUniforms(const Shader& shader);
     bool compileComputeShader(const std::string& path, GLuint& program);
     static uint32_t nextPow2(uint32_t v);
 
